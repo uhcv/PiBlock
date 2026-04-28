@@ -68,21 +68,6 @@ flowchart TB
     style subGraph1 stroke:#2962FF
 ```
 
-### 💡 Explicació
-
-Encara que el gràfic sembli complex, el procés segueix 3 passos simples:
-
-1.  **Tunnel (Playit.gg):**
-    *   Tothom entra per la mateixa porta (`Playit.gg`), sigui des de PC o Mòbil. Això evita haver de tocar la configuració del router.
-    *   JAVA i BEDROCK tenen ports diferents per a connectar-se al servidor!!!
-
-2.  **Filtre (Velocity i Geyser):**
-    *   Si vens de **PC (Java)**, passes directament desde el tunnel a (`Velocity`, port 25565).
-    *   Si vens de **Mòbil/Consola (Bedrock)**, parles un "idioma" diferent (UDP). Primer passes pel traductor (`Geyser`, port 19132), que converteix les teves dades perquè el porter t'entengui.
-
-3.  **Joc (Paper o Limbo):**
-    *   Un cop a dins, Velocity t'envia al servidor de joc (`Paper`, port 30066) per jugar.
-    *   Si el joc s'està reiniciant o hi ha un error, en lloc d'expulsar-te, t'envia automàticament a la sala d'espera (`Limbo`, port 30000) fins que tot torni a funcionar.
 
 ---
 ## Instalació
@@ -91,12 +76,11 @@ Encara que el gràfic sembli complex, el procés segueix 3 passos simples:
   
 ## 🚀 Com engegar-ho
 
-Per a engegar has d'obrir l'arxiu start_all.bat en windows, i tenim planejada una per a Linux.
+Per a engegar-ho has d'anar a "https://piblock.cat/panel".
 
-```bat
-start_all.bat
-```
-*Això obrirà automàticament tots els 4 processos necessaris en l'ordre correcte.*
+- Un cop en en panell has d'iniciar sessio amb les credencials que et proporcionem.
+- Anar a l'apartat de servidors.
+- Engegar manualment els 4 servidors.
 
 ---
 
