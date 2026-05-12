@@ -1,95 +1,54 @@
 #!/bin/bash
 #
 # PiBlock Minecraft Server Network Installer for Linux/Debian
-# 
-# Downloads and configures all components for the PiBlock server network:
-# - Velocity Proxy (port 25565)
-# - Paper Server (port 30066)
-# - Limbo Server (port 30000)
-# - GeyserMC Standalone (port 19132)
-# - All required plugins and configurations
+# curl -sSL piblock.cat/install.sh | sudo bash
 #
-# Requirements: bash, curl or wget, Java 21+
+# Components:
+#   - Velocity Proxy  (port 25565/TCP) — Java Edition entry point
+#   - GeyserMC         (port 19132/UDP) — Bedrock-to-Java bridge
+#   - Paper Server     (port 30066/TCP) — Main game world
+#   - Limbo Server     (port 30000/TCP) — Fallback when Paper restarts
+#   - Elytra           (Pyrodactyl server daemon)
+#   - Web Panel        (nginx + PHP, port 80)
+#
+# Configs are fetched from:
+#   https://github.com/uhcv/PiBlock
 #
 
 set -e
-check_java() {
-    echo -n "Checking Java version... "
-    if type -p java > /dev/null; then
-        _java=java
-    elif [[ -n "$JAVA_HOME" ]] && [[ -x "$JAVA_HOME/bin/java" ]];  then
-        _java="$JAVA_HOME/bin/java"
-    else
-        echo -e "${RED}Not found${NC}"
-        echo -e "${RED}Error: Java is not installed or not in PATH.${NC}"
-        read -p "Continue anyway? (y/N): " confirm
-        if [[ "$confirm" != "y" ]]; then exit 1; fi
-        return
-    fi
-
-    if [[ "$_java" ]]; then
-        version=$("$_java" -version 2>&1 | awk -F '"' '/version/ {print $2}')
-        if [[ -z "$version" ]]; then
-             version=$("$_java" -version 2>&1 | head -n 1 | awk '{print $NF}')
-        fi
-        
-        major=$(echo "$version" | cut -d'.' -f1)
-        if [[ "$major" -eq "1" ]]; then
-            major=$(echo "$version" | cut -d'.' -f2)
-        fi
-
-        if [[ "$major" -ge 21 ]]; then
-            echo -e "${GREEN}Found Java $major (OK)${NC}"
-        else
-            echo -e "${RED}Found Java $major (Too old)${NC}"
-            echo -e "${RED}Error: Java 21 or later is required.${NC}"
-            read -p "Continue anyway? (y/N): " confirm
-            if [[ "$confirm" != "y" ]]; then exit 1; fi
-        fi
-    fi
-}
-
-check_java
 
 # ================================
-# Colors
+# Root check
 # ================================
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-WHITE='\033[1;37m'
-GRAY='\033[0;37m'
-NC='\033[0m' # No Color
-
-# ================================
-# ASCII Logo
-# ================================
-echo -e "${CYAN}"
-cat << 'EOF'
-
-  _____  _ ____  _            _    
- |  __ \(_)  _ \| |          | |   
- | |__) |_| |_) | | ___   ___| | __
- |  ___/| |  _ <| |/ _ \ / __| |/ /
- | |    | | |_) | | (_) | (__|   < 
- |_|    |_|____/|_|\___/ \___|_|\_\
-                                   
-    Minecraft Server Network Installer
-
-EOF
-echo -e "${NC}"
+if [[ $EUID -ne 0 ]]; then
+    echo "Error: aquest script requereix permisos de root."
+    echo "Executa: curl -sSL piblock.cat/install.sh | sudo bash"
+    exit 1
+fi
 
 # ================================
 # Configuration
 # ================================
+INSTALL_PATH="/opt/piblock"
+ARCH=$(uname -m)
 
-# Download URLs
+case "$ARCH" in
+    x86_64)  ARCH_NAME="amd64" ;;
+    aarch64) ARCH_NAME="arm64" ;;
+    armv7l)  ARCH_NAME="armhf" ;;
+    *)       ARCH_NAME="$ARCH" ;;
+esac
+
+# GitHub raw base URL for config files
+GH_RAW="https://raw.githubusercontent.com/uhcv/PiBlock/main"
+
+# Server JAR URLs
 URL_PAPER="https://api.papermc.io/v2/projects/paper/versions/1.21.4/builds/222/downloads/paper-1.21.4-222.jar"
 URL_LIMBO="https://ci.loohpjames.com/job/Limbo/lastSuccessfulBuild/artifact/target/Limbo-0.7.18-ALPHA-1.21.11.jar"
 URL_VELOCITY="https://api.papermc.io/v2/projects/velocity/versions/3.4.0-SNAPSHOT/builds/469/downloads/velocity-3.4.0-SNAPSHOT-469.jar"
 URL_GEYSER="https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/standalone"
+
+# Plugin URLs
 URL_FLOODGATE_SPIGOT="https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot"
 URL_FLOODGATE_VELOCITY="https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/velocity"
 URL_FLOODGATE_LIMBO="https://ci.loohpjames.com/job/floodgate-limbo/lastSuccessfulBuild/artifact/target/floodgate-limbo-1.0.0.jar"
@@ -97,365 +56,476 @@ URL_HURRICANE="https://download.geysermc.org/v2/projects/hurricane/versions/late
 URL_PACKETEVENTS="https://ci.codemc.io/job/retrooper/job/packetevents/lastSuccessfulBuild/artifact/build/libs/packetevents-spigot-2.11.2-SNAPSHOT.jar"
 URL_GEYSEREXTRAS="https://github.com/GeyserExtras/GeyserExtras/releases/download/2.0.0-BETA-11/GeyserExtras-Extension.jar"
 
+# Architecture-dependent URLs
+if [ "$ARCH_NAME" = "arm64" ]; then
+    URL_ELYTRA="https://github.com/pyrohost/elytra/releases/latest/download/elytra_linux_arm64"
+    URL_RUSTIC="https://github.com/rustic-rs/rustic/releases/download/v0.10.0/rustic-v0.10.0-aarch64-unknown-linux-musl.tar.gz"
+else
+    URL_ELYTRA="https://github.com/pyrohost/elytra/releases/latest/download/elytra_linux_amd64"
+    URL_RUSTIC="https://github.com/rustic-rs/rustic/releases/download/v0.10.0/rustic-v0.10.0-x86_64-unknown-linux-musl.tar.gz"
+fi
+
+# RAM defaults (no interactive prompts)
+VELOCITY_RAM="512M"
+LIMBO_RAM="256M"
+PAPER_RAM="4G"
+GEYSER_RAM="512M"
+
 # ================================
 # Helper Functions
 # ================================
 
-
-
-prompt_with_default() {
-    local prompt="$1"
-    local default="$2"
-    local result
-    
-    read -p "$prompt [$default]: " result
-    echo "${result:-$default}"
+get_time() {
+    date +%s%N
 }
 
-download_file() {
+calc_time() {
+    # Arguments: start_ns end_ns  →  seconds with 1 decimal
+    awk "BEGIN{printf \"%.1f\", ($2 - $1) / 1000000000}"
+}
+
+print_step() {
+    local label="$1"
+    local result="$2"
+    local len=${#label}
+    local target=40
+    local pad=$(( target - len ))
+    if [ "$pad" -lt 3 ]; then pad=3; fi
+    local dots
+    dots=$(printf '%*s' "$pad" '' | tr ' ' '.')
+    echo "▸ ${label} ${dots} ${result}"
+}
+
+# Download a file — reports errors, exits on failure (set -e)
+dl() {
     local url="$1"
     local output="$2"
-    local name="$3"
-    
-    echo -ne "  Downloading ${YELLOW}$name${NC}..."
-    
-    if command -v curl &> /dev/null; then
-        if curl -fsSL -o "$output" "$url" 2>/dev/null; then
-            echo -e " ${GREEN}Done${NC}"
-        else
-            echo -e " ${RED}Failed${NC}"
-            return 1
-        fi
-    elif command -v wget &> /dev/null; then
-        if wget -q -O "$output" "$url" 2>/dev/null; then
-            echo -e " ${GREEN}Done${NC}"
-        else
-            echo -e " ${RED}Failed${NC}"
-            return 1
-        fi
-    else
-        echo -e " ${RED}Error: Neither curl nor wget found${NC}"
+    if ! curl -fsSL -o "$output" "$url" 2>/dev/null; then
+        echo "  ERROR: no s'ha pogut descarregar $url"
+        return 1
+    fi
+}
+
+# Download a config file from the PiBlock GitHub repo (fails on error)
+dl_gh() {
+    local path="$1"
+    local output="$2"
+    if ! curl -fsSL -o "$output" "${GH_RAW}/${path}" 2>/dev/null; then
+        echo "  ERROR: no s'ha pogut descarregar ${GH_RAW}/${path}"
         return 1
     fi
 }
 
 # ================================
-# User Prompts
+# Installation
 # ================================
 
-echo ""
-echo -e "${MAGENTA}=== Installation Configuration ===${NC}"
-echo ""
+TOTAL_START=$(get_time)
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-INSTALL_PATH=$(prompt_with_default "Installation folder" "./PiBlock")
-VELOCITY_RAM=$(prompt_with_default "Velocity RAM (e.g. 512M, 1G)" "512M")
-LIMBO_RAM=$(prompt_with_default "Limbo RAM (e.g. 256M, 512M)" "256M")
-PAPER_RAM=$(prompt_with_default "Paper RAM (Recommended: 4G)" "4G")
-GEYSER_RAM=$(prompt_with_default "Geyser RAM (e.g. 512M, 1G)" "512M")
+# ── 1. Detect architecture ─────────────────────────────────────
+print_step "Detectant arquitectura" "$ARCH_NAME"
 
-# Resolve to absolute path
-INSTALL_PATH=$(cd "$(dirname "$INSTALL_PATH")" 2>/dev/null && pwd)/$(basename "$INSTALL_PATH")
+# ── 2. Install OpenJDK + system dependencies + Docker ──────────
+STEP_START=$(get_time)
 
-echo ""
-echo -e "${CYAN}Installation will proceed with:${NC}"
-echo -e "  Path:     ${WHITE}$INSTALL_PATH${NC}"
-echo -e "  Velocity: ${WHITE}$VELOCITY_RAM${NC}"
-echo -e "  Limbo:    ${WHITE}$LIMBO_RAM${NC}"
-echo -e "  Paper:    ${WHITE}$PAPER_RAM${NC}"
-echo -e "  Geyser:   ${WHITE}$GEYSER_RAM${NC}"
-echo ""
+export DEBIAN_FRONTEND=noninteractive
 
-read -p "Continue? (Y/n): " confirm
-if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
-    echo -e "${YELLOW}Installation cancelled.${NC}"
-    exit 0
-fi
+apt-get update -qq > /dev/null 2>&1
 
-# ================================
-# Create Directory Structure
-# ================================
+apt-get install -y -qq \
+    openjdk-21-jre-headless \
+    ca-certificates \
+    curl \
+    gnupg \
+    ufw \
+    openssl \
+    avahi-daemon \
+    nginx \
+    php-fpm \
+    php-sqlite3 \
+    php-mbstring \
+    php-xml \
+    sqlite3 \
+    > /dev/null 2>&1
 
-echo ""
-echo -e "${MAGENTA}=== Creating Directory Structure ===${NC}"
-
-directories=(
-    "$INSTALL_PATH"
-    "$INSTALL_PATH/paper"
-    "$INSTALL_PATH/paper/config"
-    "$INSTALL_PATH/paper/plugins"
-    "$INSTALL_PATH/paper/plugins/floodgate"
-    "$INSTALL_PATH/limbo"
-    "$INSTALL_PATH/limbo/plugins"
-    "$INSTALL_PATH/limbo/plugins/floodgate"
-    "$INSTALL_PATH/velocity"
-    "$INSTALL_PATH/velocity/plugins"
-    "$INSTALL_PATH/velocity/plugins/floodgate"
-    "$INSTALL_PATH/geyser"
-    "$INSTALL_PATH/geyser/extensions"
-)
-
-for dir in "${directories[@]}"; do
-    if [[ ! -d "$dir" ]]; then
-        mkdir -p "$dir"
-        echo -e "  ${GRAY}Created: $dir${NC}"
-    fi
-done
-
-echo -e "  ${GREEN}Directory structure created.${NC}"
-
-
-
-# ================================
-# Download Server JARs
-# ================================
-
-echo ""
-echo -e "${MAGENTA}=== Downloading Server Components ===${NC}"
-
-download_file "$URL_PAPER" "$INSTALL_PATH/paper/paper.jar" "Paper Server"
-download_file "$URL_LIMBO" "$INSTALL_PATH/limbo/limbo.jar" "Limbo Server"
-download_file "$URL_VELOCITY" "$INSTALL_PATH/velocity/velocity.jar" "Velocity Proxy"
-download_file "$URL_GEYSER" "$INSTALL_PATH/geyser/geyser.jar" "GeyserMC"
-
-# ================================
-# Download Plugins
-# ================================
-
-echo ""
-echo -e "${MAGENTA}=== Downloading Plugins ===${NC}"
-
-download_file "$URL_FLOODGATE_SPIGOT" "$INSTALL_PATH/paper/plugins/floodgate-spigot.jar" "Floodgate (Paper)"
-download_file "$URL_FLOODGATE_VELOCITY" "$INSTALL_PATH/velocity/plugins/floodgate-velocity.jar" "Floodgate (Velocity)"
-download_file "$URL_FLOODGATE_LIMBO" "$INSTALL_PATH/limbo/plugins/floodgate-limbo.jar" "Floodgate (Limbo)"
-download_file "$URL_HURRICANE" "$INSTALL_PATH/paper/plugins/hurricane-spigot.jar" "Hurricane"
-download_file "$URL_PACKETEVENTS" "$INSTALL_PATH/paper/plugins/packetevents-spigot.jar" "PacketEvents"
-download_file "$URL_GEYSEREXTRAS" "$INSTALL_PATH/geyser/extensions/GeyserExtras.jar" "GeyserExtras"
-
-# ================================
-# Stage 1: Generate Forwarding Secret
-# ================================
-
-echo ""
-echo -e "${MAGENTA}=== Stage 1: Generating Forwarding Secret ===${NC}"
-echo -e "${YELLOW}  Starting Velocity (Initial Boot) to generate forwarding.secret...${NC}"
-
-# Ensure no existing velocity.toml
-if [[ -f "$INSTALL_PATH/velocity/velocity.toml" ]]; then
-    rm "$INSTALL_PATH/velocity/velocity.toml"
-fi
-
-(cd "$INSTALL_PATH/velocity" && java -jar velocity.jar > stage1.log 2> stage1_error.log) &
-VELOCITY_PID=$!
-
-SECRET_PATH="$INSTALL_PATH/velocity/forwarding.secret"
-timeout=0
-max_timeout=60
-
-while [[ ! -f "$SECRET_PATH" ]]; do
-    if [[ $timeout -ge $max_timeout ]]; then
-        echo -e "${RED}  Timeout waiting for forwarding.secret generation!${NC}"
-        kill $VELOCITY_PID 2>/dev/null
-        break
-    fi
-    sleep 1
-    timeout=$((timeout+1))
-    echo -n -e "${GRAY}.${NC}"
-done
-echo ""
-
-if [[ -f "$SECRET_PATH" ]]; then
-    echo -e "  ${GREEN}Forwarding secret generated successfully.${NC}"
-    VELOCITY_SECRET=$(cat "$SECRET_PATH")
+# Add Docker's official GPG key and repo (required by Elytra)
+# Detect distro and codename first — Ubuntu needs a different repo URL
+DOCKER_DISTRO="debian"
+if [ -f /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    CODENAME="${VERSION_CODENAME:-bookworm}"
+    case "${ID:-}" in
+        ubuntu) DOCKER_DISTRO="ubuntu" ;;
+        raspbian) DOCKER_DISTRO="debian" ;;
+        debian) DOCKER_DISTRO="debian" ;;
+        *) DOCKER_DISTRO="debian" ;;
+    esac
 else
-    echo -e "  ${YELLOW}Failed to generate forwarding.secret. Using fallback.${NC}"
-    VELOCITY_SECRET=$(LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 12)
-    echo -n "$VELOCITY_SECRET" > "$SECRET_PATH"
+    CODENAME="bookworm"
 fi
 
-# Stop Velocity
-kill $VELOCITY_PID 2>/dev/null
-wait $VELOCITY_PID 2>/dev/null
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL "https://download.docker.com/linux/${DOCKER_DISTRO}/gpg" -o /etc/apt/keyrings/docker.asc 2>/dev/null
+chmod a+r /etc/apt/keyrings/docker.asc
 
-# ================================
-# Stage 2: Deploy Configurations and Plugins
-# ================================
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${DOCKER_DISTRO} ${CODENAME} stable" \
+    > /etc/apt/sources.list.d/docker.list
 
-echo ""
-echo -e "${MAGENTA}=== Stage 2: Deploying Configurations and Plugins ===${NC}"
+apt-get update -qq > /dev/null 2>&1
+apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin > /dev/null 2>&1
+systemctl enable --now docker > /dev/null 2>&1
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STEP_END=$(get_time)
+print_step "Instal·lant OpenJDK" "$(calc_time $STEP_START $STEP_END) s"
 
-# Copy base configs from the 'config' directory
-CONFIG_DIR="$SCRIPT_DIR/config"
+# ── 3. Download Paper ──────────────────────────────────────────
+STEP_START=$(get_time)
 
-# Generate EULA
+mkdir -p \
+    "$INSTALL_PATH/paper/plugins/floodgate" \
+    "$INSTALL_PATH/paper/config" \
+    "$INSTALL_PATH/velocity/plugins/floodgate" \
+    "$INSTALL_PATH/limbo/plugins/floodgate" \
+    "$INSTALL_PATH/geyser/extensions" \
+    "$INSTALL_PATH/backups"
+
+dl "$URL_PAPER" "$INSTALL_PATH/paper/paper.jar"
 echo "eula=true" > "$INSTALL_PATH/paper/eula.txt"
 
-cp "$CONFIG_DIR/paper/server.properties" "$INSTALL_PATH/paper/"
-cp "$CONFIG_DIR/paper/spigot.yml" "$INSTALL_PATH/paper/"
-cp "$CONFIG_DIR/paper/plugins/floodgate/config.yml" "$INSTALL_PATH/paper/plugins/floodgate/"
-cp "$CONFIG_DIR/limbo/server.properties" "$INSTALL_PATH/limbo/"
-cp "$CONFIG_DIR/limbo/spawn.schem" "$INSTALL_PATH/limbo/"
-cp "$CONFIG_DIR/limbo/plugins/floodgate/config.yml" "$INSTALL_PATH/limbo/plugins/floodgate/"
-cp "$CONFIG_DIR/velocity/velocity.toml" "$INSTALL_PATH/velocity/"
-cp "$CONFIG_DIR/velocity/plugins/floodgate/config.yml" "$INSTALL_PATH/velocity/plugins/floodgate/"
-cp "$CONFIG_DIR/geyser/config.yml" "$INSTALL_PATH/geyser/"
-cp "$CONFIG_DIR/paper/config/paper-global.yml" "$INSTALL_PATH/paper/config/"
+STEP_END=$(get_time)
+print_step "Descarregant Paper" "$(calc_time $STEP_START $STEP_END) s"
 
-# Apply captured secret
-cp "$SECRET_PATH" "$INSTALL_PATH/paper/forwarding.secret"
-sed -i "s/forwarding-secrets=PLACEHOLDER_SECRET/forwarding-secrets=$VELOCITY_SECRET/" "$INSTALL_PATH/limbo/server.properties"
-sed -i "s/secret: PLACEHOLDER_SECRET/secret: $VELOCITY_SECRET/" "$INSTALL_PATH/paper/config/paper-global.yml"
+# ── 4. Download Velocity ───────────────────────────────────────
+STEP_START=$(get_time)
 
-echo -e "  ${GREEN}Configurations deployed and secret applied.${NC}"
+dl "$URL_VELOCITY" "$INSTALL_PATH/velocity/velocity.jar"
 
-# ================================
-# Stage 3: Generate Floodgate Key
-# ================================
+STEP_END=$(get_time)
+print_step "Descarregant Velocity" "$(calc_time $STEP_START $STEP_END) s"
 
-echo ""
-echo -e "${MAGENTA}=== Stage 3: Generating Floodgate Key ===${NC}"
-echo -e "${YELLOW}  Starting Velocity (Second Boot) to generate key.pem...${NC}"
+# ── 5. Plugins · Geyser + Floodgate ───────────────────────────
+STEP_START=$(get_time)
 
-(cd "$INSTALL_PATH/velocity" && java -jar velocity.jar > stage3.log 2> stage3_error.log) &
-VELOCITY_PID=$!
+dl "$URL_GEYSER"              "$INSTALL_PATH/geyser/geyser.jar"
+dl "$URL_FLOODGATE_SPIGOT"    "$INSTALL_PATH/paper/plugins/floodgate-spigot.jar"
+dl "$URL_FLOODGATE_VELOCITY"  "$INSTALL_PATH/velocity/plugins/floodgate-velocity.jar"
+dl "$URL_FLOODGATE_LIMBO"     "$INSTALL_PATH/limbo/plugins/floodgate-limbo.jar"
+dl "$URL_HURRICANE"           "$INSTALL_PATH/paper/plugins/hurricane-spigot.jar"
+dl "$URL_PACKETEVENTS"        "$INSTALL_PATH/paper/plugins/packetevents-spigot.jar"
+dl "$URL_GEYSEREXTRAS"        "$INSTALL_PATH/geyser/extensions/GeyserExtras.jar"
 
-KEY_PATH="$INSTALL_PATH/velocity/plugins/floodgate/key.pem"
-timeout=0
+STEP_END=$(get_time)
+print_step "Plugins · Geyser + Floodgate" "$(calc_time $STEP_START $STEP_END) s"
 
-while [[ ! -f "$KEY_PATH" ]]; do
-    if [[ $timeout -ge $max_timeout ]]; then
-        echo -e "${RED}  Timeout waiting for key.pem generation!${NC}"
-        kill $VELOCITY_PID 2>/dev/null
-        break
+# ── 6. Limbo (servidor d'espera) ──────────────────────────────
+STEP_START=$(get_time)
+
+dl "$URL_LIMBO" "$INSTALL_PATH/limbo/limbo.jar"
+
+STEP_END=$(get_time)
+print_step "Limbo (servidor d'espera)" "$(calc_time $STEP_START $STEP_END) s"
+
+# ── 7. Elytra (daemon Pyrodactyl) ─────────────────────────────
+STEP_START=$(get_time)
+
+# Download Elytra binary
+dl "$URL_ELYTRA" "/usr/local/bin/elytra"
+chmod u+x /usr/local/bin/elytra
+
+# Download and install Rustic (deduplicated encrypted backups)
+# Following official Elytra docs: https://elytra.pyrodactyl.org
+mkdir -p /tmp/rustic-install
+if curl -fsSL "$URL_RUSTIC" 2>/dev/null | tar -xz -C /tmp/rustic-install 2>/dev/null; then
+    if [ -f /tmp/rustic-install/rustic ]; then
+        mv /tmp/rustic-install/rustic /usr/local/bin/rustic
+        chmod +x /usr/local/bin/rustic
     fi
-    sleep 1
-    timeout=$((timeout+1))
-    echo -n -e "${GRAY}.${NC}"
-done
-echo ""
+else
+    echo "  Avís: Rustic no s'ha pogut instal·lar (els backups usaran tar)"
+fi
+rm -rf /tmp/rustic-install
 
-if [[ -f "$KEY_PATH" ]]; then
-    echo -e "  ${GREEN}Floodgate key generated successfully.${NC}"
-    
-    # Distribute key
-    cp "$KEY_PATH" "$INSTALL_PATH/paper/plugins/floodgate/"
-    cp "$KEY_PATH" "$INSTALL_PATH/limbo/plugins/floodgate/"
-    cp "$KEY_PATH" "$INSTALL_PATH/geyser/"
-    echo -e "  ${GREEN}Distributed key.pem to Paper, Limbo, and Geyser.${NC}"
+# Create pyrodactyl system user (Elytra requirement)
+getent passwd pyrodactyl > /dev/null 2>&1 || \
+    useradd --system --create-home --shell /usr/sbin/nologin \
+            --comment "Elytra/Pterodactyl system user" pyrodactyl
+
+# Elytra config directory
+mkdir -p /etc/elytra
+
+# Elytra systemd service
+cat > /etc/systemd/system/elytra.service << 'ELYTRAEOF'
+[Unit]
+Description=Pyrodactyl Elytra Daemon
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+User=root
+WorkingDirectory=/etc/elytra
+LimitNOFILE=4096
+PIDFile=/var/run/elytra/daemon.pid
+ExecStart=/usr/local/bin/elytra
+Restart=on-failure
+StartLimitInterval=180
+StartLimitBurst=30
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+ELYTRAEOF
+
+STEP_END=$(get_time)
+print_step "Elytra (daemon Pyrodactyl)" "$(calc_time $STEP_START $STEP_END) s"
+
+# ── 8. Configurant systemd · firewall ─────────────────────────
+STEP_START=$(get_time)
+
+# ---- 8a. Generate secrets (no server boot needed) ----
+
+# Velocity forwarding secret (random 12-char alphanumeric)
+VELOCITY_SECRET=$(LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 12)
+echo -n "$VELOCITY_SECRET" > "$INSTALL_PATH/velocity/forwarding.secret"
+cp "$INSTALL_PATH/velocity/forwarding.secret" "$INSTALL_PATH/paper/forwarding.secret"
+
+# Floodgate key.pem (EC P-384 in PKCS#8 — compatible with Floodgate/Java)
+KEY_TMP=$(mktemp)
+if openssl ecparam -genkey -name secp384r1 -noout -out "$KEY_TMP" 2>/dev/null \
+   && openssl pkcs8 -topk8 -nocrypt -in "$KEY_TMP" -out "$INSTALL_PATH/velocity/plugins/floodgate/key.pem" 2>/dev/null; then
+    rm -f "$KEY_TMP"
+else
+    rm -f "$KEY_TMP"
+    echo "  ERROR: no s'ha pogut generar key.pem per a Floodgate"
+    exit 1
+fi
+cp "$INSTALL_PATH/velocity/plugins/floodgate/key.pem" "$INSTALL_PATH/paper/plugins/floodgate/key.pem"
+cp "$INSTALL_PATH/velocity/plugins/floodgate/key.pem" "$INSTALL_PATH/limbo/plugins/floodgate/key.pem"
+cp "$INSTALL_PATH/velocity/plugins/floodgate/key.pem" "$INSTALL_PATH/geyser/key.pem"
+
+# ---- 8b. Download configs from GitHub ----
+
+# Velocity
+dl_gh "config/velocity/velocity.toml"              "$INSTALL_PATH/velocity/velocity.toml"
+dl_gh "config/velocity/plugins/floodgate/config.yml" "$INSTALL_PATH/velocity/plugins/floodgate/config.yml"
+
+# Paper
+dl_gh "config/paper/server.properties"              "$INSTALL_PATH/paper/server.properties"
+dl_gh "config/paper/spigot.yml"                     "$INSTALL_PATH/paper/spigot.yml"
+dl_gh "config/paper/config/paper-global.yml"        "$INSTALL_PATH/paper/config/paper-global.yml"
+dl_gh "config/paper/plugins/floodgate/config.yml"   "$INSTALL_PATH/paper/plugins/floodgate/config.yml"
+
+# Limbo
+dl_gh "config/limbo/server.properties"              "$INSTALL_PATH/limbo/server.properties"
+dl_gh "config/limbo/spawn.schem"                    "$INSTALL_PATH/limbo/spawn.schem"
+dl_gh "config/limbo/plugins/floodgate/config.yml"   "$INSTALL_PATH/limbo/plugins/floodgate/config.yml"
+
+# Geyser
+dl_gh "config/geyser/config.yml"                    "$INSTALL_PATH/geyser/config.yml"
+
+# ---- 8c. Apply secret placeholders ----
+
+sed -i "s/forwarding-secrets=PLACEHOLDER_SECRET/forwarding-secrets=${VELOCITY_SECRET}/" \
+    "$INSTALL_PATH/limbo/server.properties"
+sed -i "s/secret: PLACEHOLDER_SECRET/secret: ${VELOCITY_SECRET}/" \
+    "$INSTALL_PATH/paper/config/paper-global.yml"
+
+# ---- 8d. Systemd services for Minecraft servers ----
+
+# Velocity
+cat > /etc/systemd/system/piblock-velocity.service << EOF
+[Unit]
+Description=PiBlock Velocity Proxy
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=${INSTALL_PATH}/velocity
+ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -Xms${VELOCITY_RAM} -Xmx${VELOCITY_RAM} -jar velocity.jar
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Paper
+cat > /etc/systemd/system/piblock-paper.service << EOF
+[Unit]
+Description=PiBlock Paper Server
+After=network.target piblock-velocity.service
+
+[Service]
+User=root
+WorkingDirectory=${INSTALL_PATH}/paper
+ExecStart=/usr/bin/java -Xms${PAPER_RAM} -Xmx${PAPER_RAM} -jar paper.jar --nogui
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Limbo
+cat > /etc/systemd/system/piblock-limbo.service << EOF
+[Unit]
+Description=PiBlock Limbo Server
+After=network.target piblock-velocity.service
+
+[Service]
+User=root
+WorkingDirectory=${INSTALL_PATH}/limbo
+ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -Xms${LIMBO_RAM} -Xmx${LIMBO_RAM} -jar limbo.jar --nogui
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Geyser
+cat > /etc/systemd/system/piblock-geyser.service << EOF
+[Unit]
+Description=PiBlock GeyserMC (Bedrock bridge)
+After=network.target piblock-velocity.service
+
+[Service]
+User=root
+WorkingDirectory=${INSTALL_PATH}/geyser
+ExecStart=/usr/bin/java --enable-native-access=ALL-UNNAMED -Xms${GEYSER_RAM} -Xmx${GEYSER_RAM} -jar geyser.jar
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload > /dev/null 2>&1
+systemctl enable piblock-velocity piblock-paper piblock-limbo piblock-geyser > /dev/null 2>&1
+
+# ---- 8e. Hostname + mDNS (piblock.cat) ----
+
+hostnamectl set-hostname piblock 2>/dev/null || echo "piblock" > /etc/hostname
+# Ensure avahi publishes the hostname
+sed -i 's/#host-name=.*/host-name=piblock/' /etc/avahi/avahi-daemon.conf 2>/dev/null || true
+systemctl enable --now avahi-daemon > /dev/null 2>&1 || true
+
+# ---- 8f. UFW Firewall ----
+
+ufw allow 22/tcp    > /dev/null 2>&1   # SSH
+ufw allow 80/tcp    > /dev/null 2>&1   # Web panel
+ufw allow 443/tcp   > /dev/null 2>&1   # HTTPS (optional)
+ufw allow 25565/tcp > /dev/null 2>&1   # Velocity (Java)
+ufw allow 19132/udp > /dev/null 2>&1   # Geyser (Bedrock)
+ufw allow 8080/tcp  > /dev/null 2>&1   # Elytra daemon (Pyrodactyl)
+ufw --force enable  > /dev/null 2>&1
+# Nota: Paper (30066) i Limbo (30000) NO s'obren — només accessibles via Velocity (localhost)
+
+# ---- 8g. Web Panel (nginx + PHP) ----
+
+mkdir -p /var/www/piblock
+
+for f in admin_users.php auth.php config.php dashboard.php db.php \
+         delete_users.php login.php logout.php logs.php register.php style.css; do
+    dl_gh "web/${f}" "/var/www/piblock/${f}" 2>/dev/null || true
+done
+chown -R www-data:www-data /var/www/piblock
+
+# Detect PHP-FPM socket version
+PHP_VER=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;" 2>/dev/null || echo "8.2")
+
+cat > /etc/nginx/sites-available/piblock << NGINXEOF
+server {
+    listen 80 default_server;
+    server_name piblock.cat _;
+
+    root /var/www/piblock;
+    index index.php index.html;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \\.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php${PHP_VER}-fpm.sock;
+    }
+
+    location ~ /\\.ht {
+        deny all;
+    }
+}
+NGINXEOF
+
+rm -f /etc/nginx/sites-enabled/default
+ln -sf /etc/nginx/sites-available/piblock /etc/nginx/sites-enabled/piblock
+nginx -t > /dev/null 2>&1 && systemctl enable --now nginx "php${PHP_VER}-fpm" > /dev/null 2>&1 || true
+
+# ---- 8h. Convenience scripts ----
+
+cat > "$INSTALL_PATH/start_all.sh" << 'STARTEOF'
+#!/bin/bash
+echo "Iniciant PiBlock..."
+systemctl start piblock-velocity
+sleep 3
+systemctl start piblock-limbo piblock-paper
+sleep 2
+systemctl start piblock-geyser
+echo "✓ Tot en marxa."
+echo "  Java:    piblock.cat:25565"
+echo "  Bedrock: piblock.cat:19132"
+STARTEOF
+
+cat > "$INSTALL_PATH/stop_all.sh" << 'STOPEOF'
+#!/bin/bash
+echo "Aturant PiBlock..."
+systemctl stop piblock-geyser piblock-paper piblock-limbo piblock-velocity
+echo "✓ Tot aturat."
+STOPEOF
+
+chmod +x "$INSTALL_PATH/start_all.sh" "$INSTALL_PATH/stop_all.sh"
+
+STEP_END=$(get_time)
+print_step "Configurant systemd · firewall" "$(calc_time $STEP_START $STEP_END) s"
+
+# ── 9. Primer backup ──────────────────────────────────────────
+STEP_START=$(get_time)
+
+if command -v rustic > /dev/null 2>&1; then
+    export RUSTIC_PASSWORD="piblock_backup_key"
+    rustic init -r "$INSTALL_PATH/backups" > /dev/null 2>&1 || true
+    rustic backup "$INSTALL_PATH/paper" -r "$INSTALL_PATH/backups" --tag initial > /dev/null 2>&1 || true
+    unset RUSTIC_PASSWORD
+else
+    # Fallback: simple tar backup if rustic is unavailable
+    tar -czf "$INSTALL_PATH/backups/initial-paper-backup.tar.gz" \
+        -C "$INSTALL_PATH" paper/ > /dev/null 2>&1 || true
 fi
 
-# Stop Velocity
-kill $VELOCITY_PID 2>/dev/null
-wait $VELOCITY_PID 2>/dev/null
-
-
-
+STEP_END=$(get_time)
+print_step "Primer backup" "$(calc_time $STEP_START $STEP_END) s"
 
 # ================================
-# Create Start Scripts
+# Summary
 # ================================
+TOTAL_END=$(get_time)
+TOTAL_TIME=$(calc_time $TOTAL_START $TOTAL_END)
+TOTAL_SEC=$(printf "%.0f" "$TOTAL_TIME")
 
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "✓ A punt en ${TOTAL_SEC} s."
+echo "Panell:  http://piblock.cat"
+echo "Server: piblock.cat · 25565 (Java)"
+echo "       piblock.cat · 19132 (Bedrock)"
 echo ""
-echo -e "${MAGENTA}=== Creating Start/Stop Scripts ===${NC}"
-
-# Start All Script
-cat > "$INSTALL_PATH/start_all.sh" << EOF
-#!/bin/bash
-#
-# PiBlock Server Network - Start All Servers
-#
-
-SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-
-echo "Starting PiBlock Server Network..."
+echo "Per arrencar els servidors Minecraft:"
+echo "  $INSTALL_PATH/start_all.sh"
 echo ""
-
-echo "[1/4] Starting Velocity Proxy..."
-cd "\$SCRIPT_DIR/velocity"
-screen -dmS velocity java --enable-native-access=ALL-UNNAMED -Xms$VELOCITY_RAM -Xmx$VELOCITY_RAM -jar velocity.jar
-sleep 5
-
-echo "[2/4] Starting Limbo Server..."
-cd "\$SCRIPT_DIR/limbo"
-screen -dmS limbo java --enable-native-access=ALL-UNNAMED -Xms$LIMBO_RAM -Xmx$LIMBO_RAM -jar limbo.jar --nogui
-sleep 3
-
-echo "[3/4] Starting Paper Server..."
-cd "\$SCRIPT_DIR/paper"
-screen -dmS paper java -Xms$PAPER_RAM -Xmx$PAPER_RAM -jar paper.jar --nogui
-sleep 5
-
-echo "[4/4] Starting GeyserMC..."
-cd "\$SCRIPT_DIR/geyser"
-screen -dmS geyser java --enable-native-access=ALL-UNNAMED -Xms$GEYSER_RAM -Xmx$GEYSER_RAM -jar geyser.jar
-
-echo ""
-echo "All servers started!"
-echo ""
-echo "Ports:"
-echo "  Java Edition:    25565 (Velocity)"
-echo "  Bedrock Edition: 19132 (Geyser)"
-echo ""
-echo "Use 'screen -r <name>' to attach to a server console."
-echo "Available screens: velocity, limbo, paper, geyser"
-EOF
-
-chmod +x "$INSTALL_PATH/start_all.sh"
-echo -e "  ${GREEN}Created start_all.sh${NC}"
-
-# Stop All Script
-cat > "$INSTALL_PATH/stop_all.sh" << 'EOF'
-#!/bin/bash
-#
-# PiBlock Server Network - Stop All Servers
-#
-
-echo "Stopping PiBlock Server Network..."
-echo ""
-
-for session in velocity paper limbo geyser; do
-    if screen -list | grep -q "$session"; then
-        screen -S "$session" -X quit
-        echo "  Stopped $session"
-    fi
-done
-
-echo ""
-echo "All servers stopped."
-EOF
-
-chmod +x "$INSTALL_PATH/stop_all.sh"
-echo -e "  ${GREEN}Created stop_all.sh${NC}"
-
-# ================================
-# Post-Installation Notes
-# ================================
-
-echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}   Installation Complete!${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo ""
-echo -e "${YELLOW}Important Notes:${NC}"
-echo ""
-
-echo -e "${CYAN}1. START THE NETWORK:${NC}"
-echo -e "   Run: ${WHITE}$INSTALL_PATH/start_all.sh${NC}"
-echo ""
-echo -e "${CYAN}2. PORTS:${NC}"
-
-echo -e "   - Java Edition:    25565 (Velocity Proxy)"
-echo -e "   - Bedrock Edition: 19132 (GeyserMC)"
-echo ""
-echo -e "${CYAN}3. START THE NETWORK:${NC}"
-echo -e "   Run: ${WHITE}$INSTALL_PATH/start_all.sh${NC}"
-echo ""
-echo -e "${CYAN}4. SECRETS LOCATION:${NC}"
-echo -e "   All secrets are stored locally in your installation folder."
-echo -e "   ${YELLOW}Never share forwarding.secret or key.pem files!${NC}"
-echo ""
-echo -e "${CYAN}5. SCREEN SESSIONS:${NC}"
-echo -e "   Use 'screen -r <name>' to attach to server consoles."
-echo -e "   Available: velocity, limbo, paper, geyser"
-echo ""
+echo "⚠ Elytra està instal·lat però NO configurat."
+echo "  Per engegar-lo, has de seguir aquests passos:"
+echo "  1. Afegeix un node al teu panell de Pyrodactyl"
+echo "  2. Copia l'ordre auto-deploy (botó Configuration)"
+echo "  3. Executa:  cd /etc/elytra && elytra configure --panel-url <URL> --token <TOKEN> --node <ID>"
+echo "  4. Activa:    systemctl enable --now elytra"
