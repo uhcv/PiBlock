@@ -59,10 +59,10 @@ URL_GEYSEREXTRAS="https://github.com/GeyserExtras/GeyserExtras/releases/download
 # Architecture-dependent URLs
 if [ "$ARCH_NAME" = "arm64" ]; then
     URL_ELYTRA="https://github.com/pyrohost/elytra/releases/latest/download/elytra_linux_arm64"
-    URL_RUSTIC="https://github.com/rustic-rs/rustic/releases/download/v0.10.0/rustic-v0.10.0-aarch64-unknown-linux-musl.tar.gz"
+    RUSTIC_ARCH="aarch64"
 else
     URL_ELYTRA="https://github.com/pyrohost/elytra/releases/latest/download/elytra_linux_amd64"
-    URL_RUSTIC="https://github.com/rustic-rs/rustic/releases/download/v0.10.0/rustic-v0.10.0-x86_64-unknown-linux-musl.tar.gz"
+    RUSTIC_ARCH="x86_64"
 fi
 
 # RAM defaults (no interactive prompts)
@@ -70,6 +70,9 @@ VELOCITY_RAM="512M"
 LIMBO_RAM="256M"
 PAPER_RAM="4G"
 GEYSER_RAM="512M"
+
+# Installation log
+LOG_PATH="/var/log/piblock-installer.log"
 
 # ================================
 # Helper Functions
@@ -116,6 +119,27 @@ dl_gh() {
     fi
 }
 
+# Check system resources (warn if below minimums)
+check_resources() {
+    local cpu_cores
+    cpu_cores=$(nproc 2>/dev/null || echo "1")
+    local ram_mb
+    ram_mb=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo "0")
+    local disk_gb
+    disk_gb=$(df -BG / 2>/dev/null | awk 'NR==2 {gsub(/G/,""); print $4}' || echo "0")
+    local warnings=""
+
+    [ "$cpu_cores" -lt 2 ]  && warnings="${warnings}  ⚠ CPU: ${cpu_cores} nucli(s) (mínim recomanat: 2)\n"
+    [ "$ram_mb" -lt 2048 ]   && warnings="${warnings}  ⚠ RAM: ${ram_mb}MB (mínim recomanat: 2048MB)\n"
+    [ "$disk_gb" -lt 20 ]    && warnings="${warnings}  ⚠ Disc: ${disk_gb}GB lliures (mínim recomanat: 20GB)\n"
+
+    if [ -n "$warnings" ]; then
+        echo "  ⚠ Recursos del sistema per sota del mínim:"
+        echo -e "$warnings"
+        echo "  La instal·lació pot continuar, però el rendiment pot ser limitat."
+    fi
+}
+
 # ================================
 # Installation
 # ================================
@@ -123,8 +147,12 @@ dl_gh() {
 TOTAL_START=$(get_time)
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+# Initialize log file
+echo "PiBlock Installer — $(date)" > "$LOG_PATH" 2>/dev/null || true
+
 # ── 1. Detect architecture ─────────────────────────────────────
 print_step "Detectant arquitectura" "$ARCH_NAME"
+check_resources
 
 # ── 2. Install OpenJDK + system dependencies + Docker ──────────
 STEP_START=$(get_time)
@@ -150,31 +178,36 @@ apt-get install -y -qq \
     > /dev/null 2>&1
 
 # Add Docker's official GPG key and repo (required by Elytra)
-# Detect distro and codename first — Ubuntu needs a different repo URL
-DOCKER_DISTRO="debian"
-if [ -f /etc/os-release ]; then
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    CODENAME="${VERSION_CODENAME:-bookworm}"
-    case "${ID:-}" in
-        ubuntu) DOCKER_DISTRO="ubuntu" ;;
-        raspbian) DOCKER_DISTRO="debian" ;;
-        debian) DOCKER_DISTRO="debian" ;;
-        *) DOCKER_DISTRO="debian" ;;
-    esac
+# Skip if Docker is already installed
+if command -v docker > /dev/null 2>&1; then
+    echo "  Docker ja està instal·lat, s'omet..." >> "$LOG_PATH" 2>/dev/null
 else
-    CODENAME="bookworm"
+    # Detect distro and codename first — Ubuntu needs a different repo URL
+    DOCKER_DISTRO="debian"
+    if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        CODENAME="${VERSION_CODENAME:-bookworm}"
+        case "${ID:-}" in
+            ubuntu) DOCKER_DISTRO="ubuntu" ;;
+            raspbian) DOCKER_DISTRO="debian" ;;
+            debian) DOCKER_DISTRO="debian" ;;
+            *) DOCKER_DISTRO="debian" ;;
+        esac
+    else
+        CODENAME="bookworm"
+    fi
+
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL "https://download.docker.com/linux/${DOCKER_DISTRO}/gpg" -o /etc/apt/keyrings/docker.asc 2>/dev/null
+    chmod a+r /etc/apt/keyrings/docker.asc
+
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${DOCKER_DISTRO} ${CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list
+
+    apt-get update -qq > /dev/null 2>&1
+    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin > /dev/null 2>&1
 fi
-
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL "https://download.docker.com/linux/${DOCKER_DISTRO}/gpg" -o /etc/apt/keyrings/docker.asc 2>/dev/null
-chmod a+r /etc/apt/keyrings/docker.asc
-
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${DOCKER_DISTRO} ${CODENAME} stable" \
-    > /etc/apt/sources.list.d/docker.list
-
-apt-get update -qq > /dev/null 2>&1
-apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin > /dev/null 2>&1
 systemctl enable --now docker > /dev/null 2>&1
 
 STEP_END=$(get_time)
@@ -234,26 +267,64 @@ STEP_START=$(get_time)
 dl "$URL_ELYTRA" "/usr/local/bin/elytra"
 chmod u+x /usr/local/bin/elytra
 
+# Verify binary works and save version
+ELYTRA_VER="unknown"
+if /usr/local/bin/elytra --version > /dev/null 2>&1; then
+    ELYTRA_VER=$(/usr/local/bin/elytra --version 2>/dev/null | head -1 || echo "unknown")
+fi
+mkdir -p /etc/pyrodactyl
+echo "$ELYTRA_VER" > /etc/pyrodactyl/elytra-version
+
 # Download and install Rustic (deduplicated encrypted backups)
-# Following official Elytra docs: https://elytra.pyrodactyl.org
+# Fetch latest version from GitHub API instead of hardcoding
 mkdir -p /tmp/rustic-install
-if curl -fsSL "$URL_RUSTIC" 2>/dev/null | tar -xz -C /tmp/rustic-install 2>/dev/null; then
-    if [ -f /tmp/rustic-install/rustic ]; then
-        mv /tmp/rustic-install/rustic /usr/local/bin/rustic
-        chmod +x /usr/local/bin/rustic
+RUSTIC_VER=$(curl -fsSL "https://api.github.com/repos/rustic-rs/rustic/releases/latest" 2>/dev/null \
+    | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+if [ -n "$RUSTIC_VER" ] && [ "$RUSTIC_VER" != "null" ]; then
+    URL_RUSTIC="https://github.com/rustic-rs/rustic/releases/download/${RUSTIC_VER}/rustic-${RUSTIC_VER}-${RUSTIC_ARCH}-unknown-linux-musl.tar.gz"
+    if curl -fsSL "$URL_RUSTIC" 2>/dev/null | tar -xz -C /tmp/rustic-install 2>/dev/null; then
+        if [ -f /tmp/rustic-install/rustic ]; then
+            mv /tmp/rustic-install/rustic /usr/local/bin/rustic
+            chmod +x /usr/local/bin/rustic
+        fi
+    else
+        echo "  Avís: Rustic ${RUSTIC_VER} no s'ha pogut instal·lar (els backups usaran tar)"
     fi
 else
-    echo "  Avís: Rustic no s'ha pogut instal·lar (els backups usaran tar)"
+    # Fallback to hardcoded version if API fails
+    URL_RUSTIC="https://github.com/rustic-rs/rustic/releases/download/v0.10.0/rustic-v0.10.0-${RUSTIC_ARCH}-unknown-linux-musl.tar.gz"
+    if curl -fsSL "$URL_RUSTIC" 2>/dev/null | tar -xz -C /tmp/rustic-install 2>/dev/null; then
+        if [ -f /tmp/rustic-install/rustic ]; then
+            mv /tmp/rustic-install/rustic /usr/local/bin/rustic
+            chmod +x /usr/local/bin/rustic
+        fi
+    else
+        echo "  Avís: Rustic no s'ha pogut instal·lar (els backups usaran tar)"
+    fi
 fi
 rm -rf /tmp/rustic-install
 
-# Create pyrodactyl system user (Elytra requirement)
-getent passwd pyrodactyl > /dev/null 2>&1 || \
-    useradd --system --create-home --shell /usr/sbin/nologin \
-            --comment "Elytra/Pterodactyl system user" pyrodactyl
+# Create pyrodactyl system group and user with UID/GID 8888
+# (Required by Elytra for container volume permissions)
+if ! getent group pyrodactyl > /dev/null 2>&1; then
+    groupadd --gid 8888 pyrodactyl 2>/dev/null || groupadd --system pyrodactyl
+fi
+if ! id -u pyrodactyl > /dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --uid 8888 --gid 8888 \
+            --comment "Elytra/Pyrodactyl system user" pyrodactyl 2>/dev/null || \
+    useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --comment "Elytra/Pyrodactyl system user" pyrodactyl
+fi
 
-# Elytra config directory
+# Add pyrodactyl user to docker group (required for container management)
+usermod -aG docker pyrodactyl 2>/dev/null || true
+
+# Elytra config and data directories
 mkdir -p /etc/elytra
+mkdir -p /var/lib/elytra/volumes
+mkdir -p /var/lib/elytra/archives
+mkdir -p /var/lib/elytra/backups
 
 # Elytra systemd service
 cat > /etc/systemd/system/elytra.service << 'ELYTRAEOF'
@@ -529,3 +600,5 @@ echo "  1. Afegeix un node al teu panell de Pyrodactyl"
 echo "  2. Copia l'ordre auto-deploy (botó Configuration)"
 echo "  3. Executa:  cd /etc/elytra && elytra configure --panel-url <URL> --token <TOKEN> --node <ID>"
 echo "  4. Activa:    systemctl enable --now elytra"
+echo ""
+echo "Log d'instal·lació: $LOG_PATH"
